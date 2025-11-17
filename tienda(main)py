@@ -1,0 +1,415 @@
+import json
+import requests
+import os
+import sys
+# Importar todas las clases necesarias
+from ingredientes import Ingrediente 
+from inventario import Inventario
+from menu import Menu 
+from simulaciondia import SimulacionDia
+from hotdog import HotDog
+# Importar Estadisticas solo para el menú, si existe
+try:
+    from estadisticas import Estadisticas
+except ImportError:
+    pass 
+
+class Tienda: 
+    """
+    Clase principal que coordina Inventario, Menu e Ingredientes.
+    Actúa como el módulo principal del sistema (Main).
+    """
+    def __init__(self):
+        self.ingredientes = []     # list[Ingrediente]
+        self.inventario = Inventario()
+        self.menu = Menu()
+        self.simulacion_hist = []  # list[SimulacionDia]
+        
+    def iniciar(self):
+        """Método principal de ejecución."""
+        print("====================================")
+        print(" Iniciando Sistema Hot Dog CCS")
+        print("====================================")
+
+        # 1. Preparación de directorios
+        if not os.path.exists("data"):
+            os.makedirs("data")
+        
+        # 2. Carga de datos (API y Local - Requerimiento)
+        if self.cargar_estado():
+            print("Datos cargados desde archivo local.")
+        else:
+            print("No se encontró estado local. Intentando cargar datos iniciales de la API...")
+            if not self.cargar_datos_api():
+                print("ERROR: No se pudieron cargar datos iniciales. Iniciando con inventario vacío.")
+        
+        # 3. Iniciar el menú de interacción
+        self.menu_principal()
+
+    # --- Métodos de Persistencia ---
+    
+    def cargar_datos_api(self):
+        """Carga datos iniciales desde la API de GitHub."""
+        url_api = "https://raw.githubusercontent.com/FernandoSapient/BPTSP05_2526-1/main/data.json"
+        try:
+            response = requests.get(url_api)
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Cargar Ingredientes
+                for i in data.get('ingredientes', []):
+                    self.ingredientes.append(Ingrediente(i['id'], i['nombre'], i['categoria'], i['tipo']))
+                
+                # Cargar Inventario
+                inventario_data = data.get('inventario', [])
+                for item in inventario_data:
+                    self.inventario.stock[item['nombre']] = item['stock']
+                
+                return True
+            return False
+        except Exception:
+            return False
+
+    def guardar_estado(self):
+        """Guarda el estado actual del sistema (Requerimiento)."""
+        estado = {
+            "ingredientes": [],
+            "inventario_stock": self.inventario.stock,
+        }
+        for i in self.ingredientes:
+            estado['ingredientes'].append(i.to_dict())
+
+        try:
+            with open("data/local_data.json", "w", encoding="utf-8") as f:
+                json.dump(estado, f, indent=4)
+            print("Estado guardado localmente.")
+        except Exception as e:
+            print(f"Error al guardar estado: {e}")
+
+    def cargar_estado(self):
+        """Carga el estado del sistema desde el archivo local (Requerimiento)."""
+        try:
+            with open("data/local_data.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+                # Cargar Ingredientes
+                for i in data.get('ingredientes', []):
+                    self.ingredientes.append(Ingrediente(i['id'], i['nombre'], i['categoria'], i['tipo']))
+                
+                # Cargar Inventario
+                self.inventario.stock = data.get('inventario_stock', {})
+                
+                return True
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
+
+    # --- Métodos de Gestión Centralizada (Usados por los Submenús) ---
+    
+    def agregar_ingrediente(self, id, nombre, categoria, tipo, stock_inicial=0):
+        """Agrega un Ingrediente y lo inicializa en Inventario."""
+        for i in self.ingredientes:
+            if i.nombre == nombre:
+                print("Ese ingrediente ya existe.")
+                return False
+
+        nuevo_ing = Ingrediente(id, nombre, categoria, tipo)
+        self.ingredientes.append(nuevo_ing)
+        self.inventario.stock[nombre] = stock_inicial 
+        return True
+        
+    def listar_ingredientes_por_categoria(self, categoria):
+        """Lista todos los ingredientes de una categoría."""
+        print(f"\n--- Ingredientes en categoría '{categoria}' ---")
+        encontrados = False
+        for ing in self.ingredientes:
+            if ing.categoria.lower() == categoria.lower():
+                print(ing)
+                encontrados = True
+        if encontrados == False:
+            print("No se encontraron ingredientes en esa categoría.")
+
+    def eliminar_ingrediente(self, nombre):
+        """Elimina un ingrediente, con la lógica de confirmación del menú."""
+        
+        ingrediente_a_eliminar = None
+        for ing in self.ingredientes:
+            if ing.nombre == nombre:
+                ingrediente_a_eliminar = ing
+                break
+        
+        if ingrediente_a_eliminar is None:
+            print(f"El ingrediente '{nombre}' no existe.")
+            return
+
+        en_uso = self.menu.ingredientes_en_uso()
+
+        if nombre in en_uso:
+            print(f"El ingrediente '{nombre}' está en uso en {len(self.menu.ver_menu())} hot dogs.")
+            respuesta = input("¿Eliminarlo junto con los hot dogs que lo usan? (s/n): ")
+            if respuesta.lower() != "s":
+                print("No se eliminó nada.")
+                return
+
+            self.menu.eliminar_hotdogs_con_ingrediente(nombre)
+            if nombre in self.inventario.stock:
+                 del self.inventario.stock[nombre]
+        
+        # Eliminar de la lista maestra
+        nueva_lista = []
+        for ing in self.ingredientes:
+            if ing.nombre != nombre:
+                nueva_lista.append(ing)
+        self.ingredientes = nueva_lista
+        print(f"Ingrediente '{nombre}' eliminado.")
+    
+    def agregar_receta_a_menu(self, hotdog):
+        """Coordina la validación y adición de una receta al menú."""
+        
+        # 1. Validar que los ingredientes existan
+        nombres_disponibles = set()
+        for i in self.ingredientes:
+            nombres_disponibles.add(i.nombre)
+            
+        is_registered = True
+        for ing in hotdog.ingredientes_totales():
+            if ing not in nombres_disponibles:
+                print(f"Error: Ingrediente '{ing}' no está registrado en el sistema. Debe registrarlo primero.")
+                is_registered = False
+                break
+        
+        if is_registered == False:
+            return
+
+        # 2. Validar longitud
+        if hotdog.validar_longitud(self.ingredientes) == False:
+            print(f"El pan y la salchicha NO son compatibles.")
+            confirmar = input("¿Desea agregarlo de todos modos? (s/n): ")
+            if confirmar.lower() != "s":
+                print("Registro de hot dog cancelado.")
+                return
+
+        # 3. Advertir si falta inventario
+        inventario_disponible = True
+        for ing in hotdog.ingredientes_totales():
+            if self.inventario.buscar_ingrediente(ing) <= 0:
+                inventario_disponible = False
+                print(f"Advertencia: No hay inventario de '{ing}'.")
+        
+        if inventario_disponible == False:
+            print("Advertencia: Receta agregada, pero con stock insuficiente para la venta.")
+
+        # 4. Agregar al menú
+        self.menu.agregar_hotdog(hotdog)
+        print(f"Hot dog '{hotdog.nombre}' agregado al menú.")
+
+    # --- Métodos de Simulación ---
+
+    def realizar_simulacion(self, clientes):
+        """Realiza una simulación y la registra en el historial."""
+        sim = SimulacionDia(self.menu, self.inventario)
+        sim.simular(clientes)
+        self.simulacion_hist.append(sim)
+        sim.reporte()
+        
+    def obtener_entero_valido(self, prompt):
+        """Pide un número al usuario y valida que sea un entero."""
+        while True:
+            entrada = input(prompt)
+            try:
+                return int(entrada)
+            except ValueError:
+                print("Entrada no válida. Por favor, ingrese solo números enteros.")
+
+    # --- Implementación de Submenús ---
+    
+    def menu_ingredientes(self):
+        """Menú para la Gestión de Ingredientes."""
+        while True:
+            print("\n--- GESTIÓN DE INGREDIENTES ---")
+            print("1. Listar por Categoría")
+            print("2. Agregar Nuevo Ingrediente")
+            print("3. Eliminar Ingrediente")
+            print("4. Volver al Menú Principal")
+            
+            opcion = input("Seleccione una opción: ")
+            
+            if opcion == '1':
+                cat = input("Ingrese la categoría a listar (ej: pan, salsa, topping): ")
+                self.listar_ingredientes_por_categoria(cat)
+            elif opcion == '2':
+                print("\n-- AGREGAR INGREDIENTE --")
+                id_ing = input("ID (único): ")
+                nombre_ing = input("Nombre: ")
+                cat_ing = input("Categoría (ej: pan, salchicha, salsa): ")
+                tipo_ing = input("Tipo/Longitud (ej: Grande, Pequeño, Crema): ")
+                stock_ing = self.obtener_entero_valido("Stock inicial: ")
+                
+                self.agregar_ingrediente(id_ing, nombre_ing, cat_ing, tipo_ing, stock_ing)
+
+            elif opcion == '3':
+                nombre_ing = input("Nombre del ingrediente a eliminar: ")
+                self.eliminar_ingrediente(nombre_ing)
+            elif opcion == '4':
+                break
+            else:
+                print("Opción no válida. Intente de nuevo.")
+
+    def menu_inventario(self):
+        """Menú para la Gestión de Inventario."""
+        while True:
+            print("\n--- GESTIÓN DE INVENTARIO ---")
+            print("1. Visualizar Todo el Inventario")
+            print("2. Buscar Existencia de un Ingrediente")
+            print("3. Registrar Compra (Añadir Stock)")
+            print("4. Volver al Menú Principal")
+            
+            opcion = input("Seleccione una opción: ")
+            
+            if opcion == '1':
+                print("\n--- INVENTARIO ACTUAL ---")
+                stock = self.inventario.ver_inventario()
+                for nombre, cantidad in stock.items():
+                    print(f"- {nombre}: {cantidad}")
+            elif opcion == '2':
+                nombre = input("Nombre del ingrediente a buscar: ")
+                cantidad = self.inventario.buscar_ingrediente(nombre)
+                print(f"Existencia de '{nombre}': {cantidad}")
+            elif opcion == '3':
+                nombre = input("Nombre del ingrediente a reponer: ")
+                cantidad = self.obtener_entero_valido("Cantidad comprada: ")
+                self.inventario.registrar_compra(nombre, cantidad)
+            elif opcion == '4':
+                break
+            else:
+                print("Opción no válida.")
+
+    def menu_recetas(self):
+        """Menú para la Gestión de Recetas (Menú)."""
+        while True:
+            print("\n--- GESTIÓN DEL MENÚ ---")
+            print("1. Ver Lista de Hot Dogs")
+            print("2. Agregar Nuevo Hot Dog (Receta)")
+            print("3. Eliminar Hot Dog")
+            print("4. Volver al Menú Principal")
+            
+            opcion = input("Seleccione una opción: ")
+            
+            if opcion == '1':
+                print("\n--- RECETAS EN MENÚ ---")
+                if len(self.menu.ver_menu()) == 0:
+                    print("El menú está vacío.")
+                    continue
+                for hd in self.menu.ver_menu():
+                    hd.mostrar_info()
+                    print("-" * 20)
+            elif opcion == '2':
+                print("\n-- AGREGAR RECETA --")
+                nombre = input("Nombre de la receta: ")
+                pan = input("Pan (Nombre de ingrediente registrado): ")
+                salchicha = input("Salchicha (Nombre de ingrediente registrado): ")
+                toppings_str = input("Toppings (separados por coma, ej: Cebolla,Pepinillo): ")
+                salsas_str = input("Salsas (separadas por coma, ej: Ketchup,Mostaza): ")
+                acompanante = input("Acompañante (o dejar vacío): ")
+                
+                toppings = [t.strip() for t in toppings_str.split(',') if t.strip()]
+                salsas = [s.strip() for s in salsas_str.split(',') if s.strip()]
+                acompanante = acompanante if acompanante.strip() else None
+
+                nueva_receta = HotDog(nombre, pan, salchicha, toppings, salsas, acompanante)
+                self.agregar_receta_a_menu(nueva_receta) # La Tienda maneja la validación
+                
+            elif opcion == '3':
+                nombre = input("Nombre del hot dog a eliminar: ")
+                
+                # Búsqueda simple para validar si existe
+                hotdog_existe = False
+                for hd in self.menu.hotdogs:
+                    if hd.nombre == nombre:
+                        hotdog_existe = True
+                        break
+                
+                if hotdog_existe == False:
+                    print(f"No se encontró el hot dog '{nombre}'.")
+                    continue
+
+                self.menu.eliminar_hotdog(nombre)
+                print(f"Hot dog '{nombre}' eliminado.")
+                
+            elif opcion == '4':
+                break
+            else:
+                print("Opción no válida.")
+
+
+    def menu_simulacion(self):
+        """Menú para la Simulación del Día de Ventas."""
+        print("\n--- SIMULACIÓN DÍA DE VENTAS ---")
+        if len(self.menu.ver_menu()) == 0:
+            print("El menú está vacío. No se puede simular.")
+            return
+
+        num_clientes = self.obtener_entero_valido("Ingrese el número de clientes a simular: ")
+        self.realizar_simulacion(num_clientes)
+    
+    def menu_estadisticas(self):
+        """Menú para el Módulo de Estadísticas (Bono)."""
+        if 'Estadisticas' in globals():
+            estadisticas = Estadisticas(self.simulacion_hist)
+            
+            while True:
+                print("\n--- MÓDULO DE ESTADÍSTICAS (BONO) ---")
+                print(f"Días simulados registrados: {estadisticas.dias_simulados}")
+                print("1. Resumen Histórico")
+                print("2. Graficar Resultados (Requiere 2+ días)")
+                print("3. Volver al Menú Principal")
+                
+                opcion = input("Seleccione una opción: ")
+                
+                if opcion == '1':
+                    estadisticas.resumen()
+                elif opcion == '2':
+                    estadisticas.graficar()
+                elif opcion == '3':
+                    break
+                else:
+                    print("Opción no válida.")
+        else:
+            print("El módulo 'estadisticas.py' no se pudo cargar. Verifique la instalación de matplotlib.")
+
+    def menu_principal(self):
+        """Muestra el menú principal y maneja la navegación."""
+        while True:
+            print("\n--- MENÚ PRINCIPAL HOT DOG CCS ---")
+            print("1. Gestión de Ingredientes")
+            print("2. Gestión de Inventario")
+            print("3. Gestión del Menú (Recetas)")
+            print("4. Simular Día de Ventas")
+            print("5. Módulo de Estadísticas (Bono)")
+            print("6. Guardar estado y Salir")
+            
+            opcion = input("Seleccione una opción: ")
+            
+            if opcion == '1':
+                self.menu_ingredientes()
+            elif opcion == '2':
+                self.menu_inventario()
+            elif opcion == '3':
+                self.menu_recetas()
+            elif opcion == '4':
+                self.menu_simulacion()
+            elif opcion == '5':
+                self.menu_estadisticas()
+            elif opcion == '6':
+                self.guardar_estado()
+                print("Saliendo del sistema.")
+                sys.exit()
+            else:
+                print("Opción no válida. Intente de nuevo.")
+
+
+if __name__ == "__main__":
+    # Requiere que la librería 'requests' esté instalada: pip install requests
+    tienda_app = Tienda()
+    tienda_app.iniciar()
