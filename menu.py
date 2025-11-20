@@ -51,3 +51,4 @@ class Menu:
         print(f"Se eliminaron hot dogs que usaban '{nombre_ingrediente}'.")
 
 
+
