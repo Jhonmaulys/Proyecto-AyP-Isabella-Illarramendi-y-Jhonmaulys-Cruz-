@@ -1,5 +1,5 @@
 import random
-# from hotdog import HotDog # Se asume HotDog está importado
+from hotdog impory Hotdog
 
 class Menu:
     """Administra los hot dogs del menú."""
@@ -49,3 +49,4 @@ class Menu:
                 nueva_lista.append(hd)
         self.hotdogs = nueva_lista
         print(f"Se eliminaron hot dogs que usaban '{nombre_ingrediente}'.")
+
