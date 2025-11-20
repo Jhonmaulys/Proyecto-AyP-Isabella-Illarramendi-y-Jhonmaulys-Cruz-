@@ -1,4 +1,8 @@
 import random 
+from inventario import Inventario
+from menu import Menu
+from ingredientes import Ingrediente
+from hotdog import Hotdog
 
 class SimulacionDia:
     """Clase encargada de la simulación de un día de ventas."""
@@ -127,4 +131,5 @@ class SimulacionDia:
         print(f"7. Ingredientes que causaron que el cliente se marchara: {ing_marcha_str}")
 
         # 8. Total de acompañantes vendidos
+
         print(f"8. Total de acompañantes vendidos: {self.resultados['total_acompanantes_vendidos']}")
